@@ -1,4 +1,5 @@
 AC_PREREQ([2.69])
+
 m4_define([mech_passkey_plugin_VERSION],
     m4_esyscmd_s([build-aux/git-version-gen]))
 
@@ -22,6 +23,7 @@ DC_DOVECOT
 DC_DOVECOT_MODULEDIR
 
 PKG_CHECK_MODULES([FIDO2], [libfido2], , AC_MSG_ERROR([Cannot find libfido2]))
+PKG_CHECK_MODULES([CBOR], [libcbor], , AC_MSG_ERROR([Cannot find libcbor]))
 
 LIBDOVECOT_INCLUDE="$LIBDOVECOT_INCLUDE $LIBDOVECOT_STORAGE_INCLUDE"
 CFLAGS="$CFLAGS $EXTRA_CFLAGS"
