@@ -349,8 +349,15 @@ mech_passkey_auth_continue(struct auth_request *req,
 	} else {
 		/* validate attestation */
 		if (mech_passkey_validate(preq, data, data_len)) {
-			const char *reply = "{\"token-type\":\"oauth2\",\"token\":\"90db73ca-e1ff-11ef-b547-67deccb6b34f\"}";
-			auth_request_success(req, reply, strlen(reply));
+			cbor_item_t *item = cbor_new_definite_map(2);
+			passkey_cbor_add_string(item, "token-type", "oauth2");
+			passkey_cbor_add_string(item, "token", "90db73ca-e1ff-11ef-b547-67deccb6b34f");
+			buffer_t *reply = t_buffer_create(256);
+			unsigned char *fillbuf =
+				buffer_get_space_unsafe(reply, 0, 256);
+			size_t used = cbor_serialize_map(item, fillbuf, 256);
+			buffer_set_used_size(reply, used);
+			auth_request_success(req, reply->data, reply->used);
 			return;
 		}
 	}
