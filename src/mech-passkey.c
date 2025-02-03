@@ -5,17 +5,16 @@
 #include "array.h"
 #include "randgen.h"
 #include "buffer.h"
+#include "str.h"
 #include "dcrypt.h"
 #include "byteorder.h"
 #include "guid.h"
 #include "base64.h"
+#include "sha2.h"
+
+#include "hex-binary.h"
 
 #include "cbor.h"
-#include "cbor/data.h"
-#include "cbor/strings.h"
-#include "cbor/ints.h"
-#include "cbor/bytestrings.h"
-#include "cbor/serialization.h"
 
 const char *mech_passkey_plugin_version = DOVECOT_ABI_VERSION;
 const char *mech_passkey_plugin_dependencies[] = { NULL };
@@ -47,72 +46,95 @@ static struct auth_request *mech_passkey_auth_new(void)
 	return &request->auth_request;
 }
 
-struct cbor_decode_context {
-};
-
-#define PASSKEY_CBOR_INT(s, typ) \
-static void passkey_cbor_uint##s(void *context, typ v) \
-{ \
-	uint64_t v2 = v; \
-	i_debug("Got " #typ " value %lu", v2); \
-}; \
-static void passkey_cbor_negint##s(void *context, typ v) \
-{ \
-	uint64_t v2 = v; \
-	i_debug("Got " #typ " value -%lu", v2); \
-}
-
-PASSKEY_CBOR_INT(8, uint8_t);
-PASSKEY_CBOR_INT(16, uint16_t);
-PASSKEY_CBOR_INT(32, uint32_t);
-PASSKEY_CBOR_INT(64, uint64_t);
-
-static void passkey_cbor_map_start(void *context, unsigned long size)
+static int passkey_decode_public_key(struct passkey_auth_request *preq,
+				     const unsigned char *ptr, size_t size)
 {
-	i_debug("map of %zu values", size);
-}
-
-static void passkey_cbor_tag(void *context, unsigned long tag)
-{
-	i_debug("got tag %zu", tag);
-}
-
-static void passkey_cbor_string(void *context, const unsigned char *string, unsigned long size)
-{
-	i_debug("got string %zu bytes", size);
-}
-
-static int passkey_decode_public_key(const unsigned char *ptr, size_t size)
-{
-	struct cbor_decode_context ctx;
-	struct cbor_decoder_result res;
-
-	struct cbor_callbacks cb = cbor_empty_callbacks;
-
-	cb.map_start = passkey_cbor_map_start;
-	cb.tag = passkey_cbor_tag;
-	cb.string = passkey_cbor_string;
-	cb.byte_string = passkey_cbor_string;
-
-	cb.negint8 = passkey_cbor_negint8;
-	cb.negint16 = passkey_cbor_negint16;
-	cb.negint32 = passkey_cbor_negint32;
-	cb.negint64 = passkey_cbor_negint64;
-
-	cb.uint8 = passkey_cbor_uint8;
-	cb.uint16 = passkey_cbor_uint16;
-	cb.uint32 = passkey_cbor_uint32;
-	cb.uint64 = passkey_cbor_uint64;
-
-	res = cbor_stream_decode(ptr, size, &cb, &ctx);
-
-	if (res.status != CBOR_DECODER_FINISHED)
+	struct cbor_load_result result;
+	cbor_item_t *item = cbor_load(ptr, size, &result);
+	const void *xb = NULL;
+	size_t xl = 0;
+	const void *yb = NULL;
+	size_t yl = 0;
+	if (result.error.code != 0)
 		return -1;
+	if (cbor_isa_map(item)) {
+		size_t items = cbor_map_size(item);
+		struct cbor_pair *pairs = cbor_map_handle(item);
+		int key_type;
+		int algorithm;
+		int curve;
 
-	return res.read;
+		for (size_t i = 0; i < items; i++) {
+			struct cbor_pair *pair = pairs + i;
+			int key;
+			cbor_type type = cbor_typeof(item);
+			i_debug("item is %d", type);
+			key = cbor_get_uint8(pair->key);
+			if (cbor_isa_negint(pair->key))
+				key = (-key)-1;
+			i_debug("key is %d", key);
+			switch (key) {
+			case 1: /* Key type */
+				key_type = cbor_get_int(pair->value);
+				i_debug("Key type = %d", key_type);
+				break;
+			case 3:
+				algorithm = cbor_get_uint8(pair->value);
+				if (cbor_isa_negint(pair->value))
+						algorithm = (-algorithm)-1;
+				i_debug("algorithm = %d", algorithm);
+				break;
+			case -1:
+				curve = cbor_get_uint8(pair->value);
+				if (cbor_isa_negint(pair->value))
+					curve = (-curve)-1;
+				i_debug("curve = %d", curve);
+				break;
+			case -2:
+				xl = cbor_bytestring_length(pair->value);
+				xb = cbor_bytestring_handle(pair->value);
+				i_debug("x = %zu bytes", xl);
+				break;
+			case -3:
+				yl = cbor_bytestring_length(pair->value);
+				yb = cbor_bytestring_handle(pair->value);
+				i_debug("y = %zu bytes", yl);
+				break;
+			}
+		}
+	}
+
+	const char *error;
+	ARRAY_TYPE(dcrypt_raw_key) params;
+	t_array_init(&params, 3);
+	struct dcrypt_raw_key *elem = array_append_space(&params);
+	static const unsigned char oid[] = {
+		'\x06','\x08','*','\x86','H','\xce','=','\x03','\x01','\x07'
+	};
+	elem->parameter = oid;
+	elem->len = sizeof(oid);
+	elem = array_append_space(&params);
+	buffer_t *tmp = t_buffer_create(xl+yl+1);
+	buffer_append_c(tmp, '\x04');
+	buffer_append(tmp, xb, xl);
+	buffer_append(tmp, yb, yl);
+	elem->parameter = tmp->data;
+	elem->len = tmp->used;
+
+	if (!dcrypt_key_load_public_raw(&preq->cred.pubkey, DCRYPT_KEY_EC, &params, &error))
+		i_debug("%s", error);
+
+	cbor_decref(&item);
+	return result.read;
 }
 
-#define ADVANCE(n) ptr += n; size -= n
+#define ADVANCE(n) { \
+	if ((n) > size) { \
+		*error_r = "Truncated credential"; \
+		return FALSE; \
+	} \
+	ptr += (n); size -= (n); \
+}
 
 static bool passkey_fido_parse_creds(struct passkey_auth_request *preq,
 				     const unsigned char *credentials, size_t size,
@@ -121,23 +143,31 @@ static bool passkey_fido_parse_creds(struct passkey_auth_request *preq,
 	bool have_more_cred = TRUE;
 	const unsigned char *ptr = credentials;
 
+	if (size < 128) {
+		*error_r = "Too short credential";
+		return FALSE;
+	}
+
 	while (have_more_cred) {
 		/* first we have GUID */
 		memcpy(preq->cred.aaguid, ptr, 16);
 		/* then get cred id size */
 		ADVANCE(16);
 		i_debug("got guid %s", guid_128_to_uuid_string(preq->cred.aaguid, FORMAT_RECORD));
-		uint16_t cred_size = be16_to_cpu_unaligned(ptr);
+uint16_t cred_size = be16_to_cpu_unaligned(ptr);
+		i_debug("cred size = %u, size = %zu", cred_size, size);
 		if (cred_size > size) {
 			*error_r = t_strdup_printf("too large size (%u)", cred_size);
 			return FALSE;
 		}
 		ADVANCE(2);
-		preq->cred.key_id = buffer_create_dynamic(preq->auth_request.pool, cred_size);
-		memcpy(preq->cred.key_id, ptr, cred_size);
+		preq->cred.key_id =
+			buffer_create_dynamic(preq->auth_request.pool, cred_size);
+		buffer_append(preq->cred.key_id, ptr, cred_size);
+		i_debug("Got credential id %s", binary_to_hex(ptr, cred_size));
 		ADVANCE(cred_size);
 		/* CBOR decode rest */
-		passkey_decode_public_key(ptr, size);
+		passkey_decode_public_key(preq, ptr, size);
 		have_more_cred = FALSE;
 	}
 
@@ -210,25 +240,89 @@ passkey_lookup_credentials_callback(enum passdb_result result,
 		auth_request_internal_failure(req);
 	} else {
 		/* create client data */
-		preq->cd = t_buffer_create(64);
-		unsigned char *fillbuf = buffer_get_space_unsafe(preq->cd, 0, 64);
-		random_fill(fillbuf, 64);
+		preq->cd = t_buffer_create(32);
+		unsigned char *fillbuf = buffer_get_space_unsafe(preq->cd, 0, 32);
+		random_fill(fillbuf, 32);
+		buffer_set_used_size(preq->cd, 32);
 
 		/* build a request */
-		cbor_item_t *root = cbor_new_definite_map(4);
-		passkey_cbor_add_string(root, "userVerification", "required");
-		passkey_cbor_add_string(root, "rpId", "imap://localhost");
+		cbor_item_t *root = cbor_new_definite_map(5);
+		passkey_cbor_add_string(root, "rpId", "example.com");
 		passkey_cbor_add_buffer(root, "challenge", preq->cd);
 		passkey_cbor_add_ulong(root, "timeout", 60000);
 
+		cbor_item_t *allow_credentials = cbor_new_definite_map(2);
+		passkey_cbor_add_buffer(allow_credentials, "id", preq->cred.key_id);
+		passkey_cbor_add_string(allow_credentials, "type", "public-key");
+		cbor_item_t *arrCred = cbor_new_definite_array(1);
+		cbor_array_push(arrCred, allow_credentials);
+		struct cbor_pair pair;
+		pair.key = cbor_build_string("allowCredentials");
+		pair.value = arrCred;
+		cbor_map_add(root, pair);
+		passkey_cbor_add_string(root, "userVerification", "required");
 		buffer_t *tmp = t_buffer_create(256);
 		fillbuf = buffer_get_space_unsafe(tmp, 0, 256);
 		size_t used = cbor_serialize_map(root, fillbuf, 256);
 		buffer_set_used_size(tmp, used);
 
 		preq->have_user = TRUE;
-		auth_request_continue(req, tmp->data, tmp->used);
+		cbor_decref(&root);
+		auth_request_handler_reply_continue(req, tmp->data, tmp->used);
 	}
+}
+
+static bool
+mech_passkey_validate(struct passkey_auth_request *preq,
+		      const unsigned char *data, size_t len)
+{
+	/* now we validate the response */
+	struct cbor_load_result result;
+	cbor_item_t *item = cbor_load(data, len, &result);
+	size_t npairs = cbor_map_size(item);
+	struct cbor_pair *pairs = cbor_map_handle(item);
+	buffer_t *signature = NULL;
+	unsigned char digest[SHA256_RESULTLEN];
+	buffer_t *authdata = NULL;
+	memset(digest, 0, sizeof(digest));
+
+	for (size_t i = 0; i < npairs; i++) {
+		struct cbor_pair *pair = pairs + i;
+		size_t klen = cbor_string_length(pair->key);
+		const char *key = t_strndup(cbor_string_handle(pair->key), klen);
+		if (strcmp(key, "signature") == 0) {
+			size_t len = cbor_bytestring_length(pair->value);
+			signature = t_buffer_create(len);
+			buffer_append(signature, cbor_bytestring_handle(pair->value), len);
+			i_debug("signature: %zu bytes", len);
+		} else if (strcmp(key, "clientDataJSON") == 0) {
+			/* hash this */
+			size_t len = cbor_bytestring_length(pair->value);
+			const void *data = cbor_bytestring_handle(pair->value);
+			sha256_get_digest(data, len, digest);
+			i_debug("clientDataJSON: %zu bytes", len);
+		} else if (strcmp(key, "authenticatorData") == 0) {
+			size_t len = cbor_bytestring_length(pair->value);
+			authdata = t_buffer_create(len);
+			buffer_append(authdata, cbor_bytestring_handle(pair->value), len);
+			i_debug("authenticatorData: %zu bytes", len);
+		}
+	}
+
+	buffer_t *signdata = t_buffer_create(32);
+	buffer_append(signdata, authdata->data, authdata->used);
+	buffer_append(signdata, digest, sizeof(digest));
+	bool valid;
+	const char *error;
+
+	if (!dcrypt_verify(preq->cred.pubkey, "sha256", DCRYPT_SIGNATURE_FORMAT_DSS,
+			   signdata->data, signdata->used,
+			   signature->data, signature->used, &valid,
+		      	   DCRYPT_PADDING_DEFAULT, &error)) {
+		i_debug("error: %s", error);
+		valid = FALSE;
+	}
+	return valid;
 }
 
 static void
@@ -242,9 +336,7 @@ mech_passkey_auth_continue(struct auth_request *req,
 	if (data_len == 0) {
 		auth_request_fail(req);
 		return;
-	}
-
-	if (!preq->have_user) {
+	} else if (!preq->have_user) {
 		const char *username = t_strndup(data, data_len);
 		if (!auth_request_set_username(req, username, &error)) {
 			e_error(req->mech_event, "Invalid username: %s", error);
@@ -253,7 +345,16 @@ mech_passkey_auth_continue(struct auth_request *req,
 		}
 		auth_request_lookup_credentials(req, PASSKEY_SCHEME,
 						passkey_lookup_credentials_callback);
+		return;
+	} else {
+		/* validate attestation */
+		if (mech_passkey_validate(preq, data, data_len)) {
+			const char *reply = "{\"token-type\":\"oauth2\",\"token\":\"90db73ca-e1ff-11ef-b547-67deccb6b34f\"}";
+			auth_request_success(req, reply, strlen(reply));
+			return;
+		}
 	}
+	auth_request_fail(req);
 }
 
 static void mech_passkey_auth_free(struct auth_request *_request)
@@ -279,13 +380,35 @@ static const struct mech_module mech_passkey_module = {
 void mech_passkey_init(void);
 void mech_passkey_deinit(void);
 
+static int passkey_password_verify(const char *plaintext,
+				   const struct password_generate_params *params,
+				   const unsigned char *raw_password, size_t size,
+				   const char **error_r)
+{
+	*error_r = "PASSKEY cannot be verified";
+	return -1;
+}
+
+static void passkey_password_generate(const char *plaintext,
+				      const struct password_generate_params *params,
+				      const unsigned char **raw_password_r,
+				      size_t *size_r)
+{
+	*raw_password_r = (const unsigned char*)"*";
+	*size_r = 1;
+}
+
+
 static const struct password_scheme scheme_passkey =
 {
 	.name = "PASSKEY",
+	.password_generate = passkey_password_generate,
+	.password_verify = passkey_password_verify,
 };
 
 void mech_passkey_init(void)
 {
+	dcrypt_initialize(NULL, NULL, NULL);
 	mech_register_module(&mech_passkey_module);
 	password_scheme_register(&scheme_passkey);
 }
@@ -293,4 +416,6 @@ void mech_passkey_init(void)
 void mech_passkey_deinit(void)
 {
 	mech_unregister_module(&mech_passkey_module);
+	password_scheme_unregister(&scheme_passkey);
+	dcrypt_deinitialize();
 }
