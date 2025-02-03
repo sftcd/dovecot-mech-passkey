@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
+from base64 import b64decode
+from fido2.ctap2 import AttestedCredentialData
+from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePublicKey
 
-from base64 import b64decode, b64encode
-import uuid
-import struct
+with open("cred", "r") as cred_in:
+    cred = b64decode(cred_in.readline().strip()[9:])
 
-DATA = b64decode("")
 
-aaguid = uuid.UUID(bytes=DATA[0:16])
-(cred_len,) = struct.unpack(">H", DATA[16:18])
-cred_id = DATA[18:18+cred_len]
-pubkey = DATA[18+cred_len:]
-print(b64encode(pubkey).decode())
+def tag_hook(decoder, tag):
+    print(tag)
+
+
+def object_hook(decoder, obj):
+    print(obj)
+
+
+(data, _) = AttestedCredentialData.unpack_from(cred)
+pk = data.public_key
+print(pk)
+x = pk[-2]
+y = pk[-3]
+
+pubkey = EllipticCurvePublicKey.from_encoded_point(SECP256R1(), x+y)
