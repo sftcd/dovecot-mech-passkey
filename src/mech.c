@@ -69,26 +69,34 @@ static void mech_register_add(struct mechanisms_register *reg,
 			      const struct mech_module *mech)
 {
 	struct mech_module_list *list;
+	string_t *handshake;
 
 	list = p_new(reg->pool, struct mech_module_list, 1);
 	list->module = *mech;
 
-	str_printfa(reg->handshake, "MECH\t%s", mech->mech_name);
+	if ((mech->flags & MECH_SEC_CHANNEL_BINDING) != 0)
+		handshake = reg->handshake_cbind;
+	else
+		handshake = reg->handshake;
+
+	str_printfa(handshake, "MECH\t%s", mech->mech_name);
 	if ((mech->flags & MECH_SEC_PRIVATE) != 0)
-		str_append(reg->handshake, "\tprivate");
+		str_append(handshake, "\tprivate");
 	if ((mech->flags & MECH_SEC_ANONYMOUS) != 0)
-		str_append(reg->handshake, "\tanonymous");
+		str_append(handshake, "\tanonymous");
 	if ((mech->flags & MECH_SEC_PLAINTEXT) != 0)
-		str_append(reg->handshake, "\tplaintext");
+		str_append(handshake, "\tplaintext");
 	if ((mech->flags & MECH_SEC_DICTIONARY) != 0)
-		str_append(reg->handshake, "\tdictionary");
+		str_append(handshake, "\tdictionary");
 	if ((mech->flags & MECH_SEC_ACTIVE) != 0)
-		str_append(reg->handshake, "\tactive");
+		str_append(handshake, "\tactive");
 	if ((mech->flags & MECH_SEC_FORWARD_SECRECY) != 0)
-		str_append(reg->handshake, "\tforward-secrecy");
+		str_append(handshake, "\tforward-secrecy");
 	if ((mech->flags & MECH_SEC_MUTUAL_AUTH) != 0)
-		str_append(reg->handshake, "\tmutual-auth");
-	str_append_c(reg->handshake, '\n');
+		str_append(handshake, "\tmutual-auth");
+	if ((mech->flags & MECH_SEC_CHANNEL_BINDING) != 0)
+		str_append(handshake, "\tchannel-binding");
+	str_append_c(handshake, '\n');
 
 	list->next = reg->modules;
 	reg->modules = list;
@@ -113,7 +121,7 @@ mech_register_init(const struct auth_settings *set)
 {
 	struct mechanisms_register *reg;
 	const struct mech_module *mech;
-	const char *const *mechanisms;
+	const char *name;
 	pool_t pool;
 
 	pool = pool_alloconly_create("mechanisms register", 1024);
@@ -121,10 +129,14 @@ mech_register_init(const struct auth_settings *set)
 	reg->pool = pool;
 	reg->set = set;
 	reg->handshake = str_new(pool, 512);
+	reg->handshake_cbind = str_new(pool, 256);
 
-	mechanisms = t_strsplit_spaces(set->mechanisms, " ");
-	for (; *mechanisms != NULL; mechanisms++) {
-		const char *name = t_str_ucase(*mechanisms);
+	if (!array_is_created(&set->mechanisms) ||
+	    array_is_empty(&set->mechanisms))
+		i_fatal("No authentication mechanisms configured");
+
+	array_foreach_elem(&set->mechanisms, name) {
+		name = t_str_ucase(name);
 
 		if (strcmp(name, "ANONYMOUS") == 0) {
 			if (*set->anonymous_username == '\0') {
@@ -142,9 +154,6 @@ mech_register_init(const struct auth_settings *set)
 			i_fatal("Unknown authentication mechanism '%s'", name);
 		mech_register_add(reg, mech);
 	}
-
-	if (reg->modules == NULL)
-		i_fatal("No authentication mechanisms configured");
 	return reg;
 }
 
@@ -169,10 +178,10 @@ mech_register_find(const struct mechanisms_register *reg, const char *name)
 	return NULL;
 }
 
-void mech_init(const struct auth_settings *set)
+void mech_init(const struct auth_settings *set ATTR_UNUSED)
 {
 }
 
-void mech_deinit(const struct auth_settings *set)
+void mech_deinit(const struct auth_settings *set ATTR_UNUSED)
 {
 }

@@ -2,7 +2,7 @@ AM_CPPFLAGS = $(DOVECOT_CFLAGS) \
       $(LIBDOVECOT_INCLUDE) \
       $(LIBDOVECOT_AUTH_INCLUDE) \
       $(CBOR_CFLAGS) \
-      $(FIDO2_CFLAGS) -ggdb3 -O0 -Wno-error
+      $(FIDO2_CFLAGS) -ggdb3 -O0 -Wno-error -Wno-unused
 
 auth_moduledir = $(moduledir)/auth
 

@@ -7,6 +7,7 @@
 #include "auth.h"
 #include "auth-request.h"
 #include "hex-binary.h"
+#include "dcrypt.h"
 
 extern void mech_passkey_init(void);
 
@@ -73,7 +74,9 @@ static void test_mech_passkey(void)
 	test_begin("mech passkey");
 	struct auth_settings set;
 	i_zero(&set);
-	set.mechanisms = "PASSKEY";
+	t_array_init(&set.mechanisms, 1);
+	const char *mech_name_passkey = "PASSKEY";
+	array_push_back(&set.mechanisms, &mech_name_passkey);
 
 	password_schemes_init();
 	mech_register_init(&set);
