@@ -65,7 +65,11 @@ class PASSKEYAuthenticator:
         else:
             # decode challenge
             req = cbor.decode(response)
-            result = self.client.get_assertion(req)
+            try:
+                result = self.client.get_assertion(req)
+            except Exception as e:
+                print(f"{e}")
+                return ""
             return cbor.encode(result.get_response(0))
 
     def find_dev(self):
@@ -119,7 +123,14 @@ def authn(data):
         [credential], user_verification=uv
     )
 
-    result = cbor.decode(mech(cbor.encode(request_options.public_key)))
+    result = mech(cbor.encode(request_options.public_key))
+
+    if result == "":
+        print("Authentication failed")
+        return
+
+    result = cbor.decode(result)
+
     result = AuthenticatorAssertionResponse(
         client_data=result["clientDataJSON"],
         authenticator_data=result["authenticatorData"],
@@ -128,15 +139,18 @@ def authn(data):
         extension_results=result["extensionResults"],
     )
 
-    server.authenticate_complete(
-        state,
-        [credential],
-        result["credentialId"],
-        result["clientDataJSON"],
-        result["authenticatorData"],
-        result["signature"],
-    )
-
+    try:
+        server.authenticate_complete(
+            state,
+            [credential],
+            result["credentialId"],
+            result["clientDataJSON"],
+            result["authenticatorData"],
+            result["signature"],
+        )
+    except Exception as e:
+        print(f"{e}")
+    print("Authentication finished")
 
 def reg():
     logging.basicConfig(level=logging.DEBUG)
