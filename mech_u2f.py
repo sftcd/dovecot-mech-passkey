@@ -17,7 +17,12 @@ from fido2.hid import CtapHidDevice
 from fido2.utils import ByteBuffer, websafe_encode, websafe_decode
 from fido2.client import Fido2Client, WindowsClient, UserInteraction
 from fido2.server import Fido2Server
-from fido2.webauthn import AttestedCredentialData, Aaguid, CoseKey, AuthenticatorAssertionResponse
+from fido2.webauthn import (
+    AttestedCredentialData,
+    Aaguid,
+    CoseKey,
+    AuthenticatorAssertionResponse,
+)
 from base64 import b64encode, b64decode
 from getpass import getpass
 import json
@@ -99,7 +104,7 @@ def authn(data):
         logging.error("Credential does not start with {PASSKEY}")
         sys.exit(1)
 
-    mech = PASSKEYAuthenticator("user_id", appid="https://example.com")
+    mech = PASSKEYAuthenticator("user_id", appid="https://imap.example.com")
 
     user = mech("")
 
@@ -107,32 +112,44 @@ def authn(data):
 
     credential, _ = AttestedCredentialData.unpack_from(b64decode(data[9:]))
     uv = "preferred"
-    server = Fido2Server({"id": "example.com", "name": "Example RP"}, attestation="direct")
-    request_options, state = server.authenticate_begin([credential], user_verification=uv)
+    server = Fido2Server(
+        {"id": "imap.example.com", "name": "Example RP"}, attestation="direct"
+    )
+    request_options, state = server.authenticate_begin(
+        [credential], user_verification=uv
+    )
 
     result = cbor.decode(mech(cbor.encode(request_options.public_key)))
-    result = AuthenticatorAssertionResponse(client_data=result['clientDataJSON'], authenticator_data=result['authenticatorData'],
-            signature = result['signature'], credential_id=result['credentialId'], extension_results=result['extensionResults'])
-
+    result = AuthenticatorAssertionResponse(
+        client_data=result["clientDataJSON"],
+        authenticator_data=result["authenticatorData"],
+        signature=result["signature"],
+        credential_id=result["credentialId"],
+        extension_results=result["extensionResults"],
+    )
 
     server.authenticate_complete(
         state,
         [credential],
-        result['credentialId'],
-        result['clientDataJSON'],
-        result['authenticatorData'],
-        result['signature'],
+        result["credentialId"],
+        result["clientDataJSON"],
+        result["authenticatorData"],
+        result["signature"],
     )
 
 
 def reg():
+    logging.basicConfig(level=logging.DEBUG)
     mech = PASSKEYAuthenticator("user_id", appid="https://imap.example.com")
     client = mech.find_client("https://imap.example.com")
     uv = "preferred"
-    server = Fido2Server({"id": "imap.example.com", "name": "Example RP"}, attestation="direct")
+    server = Fido2Server(
+        {"id": "imap.example.com", "name": "Example RP"}, attestation="direct"
+    )
     user = {"id": b"testuser", "name": "A. User"}
-    create_options, state = server.register_begin(user, user_verification=uv,
-                                                  authenticator_attachment="cross-platform")
+    create_options, state = server.register_begin(
+        user, user_verification=uv, authenticator_attachment="cross-platform"
+    )
     result = client.make_credential(create_options["publicKey"])
     auth_data = server.register_complete(
         state, result.client_data, result.attestation_object
@@ -156,4 +173,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
