@@ -8,6 +8,9 @@
 #include "auth-request.h"
 #include "hex-binary.h"
 #include "dcrypt.h"
+#include <stdio.h>
+
+static char *credfile = NULL;
 
 extern void mech_passkey_init(void);
 
@@ -61,7 +64,7 @@ void auth_request_lookup_credentials(struct auth_request *request,
 	if (strcmp(request->fields.user, "testuser") == 0) {
 		const char *error;
 		buffer_t *cred = t_buffer_create(32);
-		buffer_append_full_file(cred, "/home/cmouse/projects/mech-passkey/cred", UINT_MAX, &error);
+		buffer_append_full_file(cred, credfile, UINT_MAX, &error);
 		buffer_delete(cred, 0, 9);
 		callback(PASSDB_RESULT_OK, cred->data, cred->used, request);
 	} else
@@ -98,12 +101,19 @@ static void test_mech_passkey(void)
 	test_end();
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	static void (*test_functions[])(void) = {
 		test_mech_passkey,
 		NULL
 	};
+
+	/* one and only argument is cred file name */
+	if (argc != 2) {
+		printf("Usage: test <credfile>\n");
+		exit(0);
+	}
+	credfile = argv[1];
 
 	dcrypt_initialize(NULL, NULL, NULL);
 
